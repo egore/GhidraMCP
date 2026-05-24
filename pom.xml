@@ -71,11 +71,9 @@
 
     <!-- Gson for JSON parsing (bundled with Ghidra) -->
     <dependency>
-      <groupId>com.google.gson</groupId>
+      <groupId>com.google.code.gson</groupId>
       <artifactId>gson</artifactId>
       <version>2.9.0</version>
-      <scope>system</scope>
-      <systemPath>${project.basedir}/lib/gson.jar</systemPath>
     </dependency>
 
     <!-- JUnit (test only) -->
