@@ -209,18 +209,22 @@ def disassemble_function(address: str) -> list:
     return safe_get("disassemble_function", {"address": address})
 
 @mcp.tool()
-def set_decompiler_comment(address: str, comment: str) -> str:
+def set_comment(address: str, comment: str, comment_type: str) -> str:
     """
-    Set a comment for a given address in the function pseudocode.
-    """
-    return safe_post("set_decompiler_comment", {"address": address, "comment": comment})
+    Set a comment of any type at a given address.
 
-@mcp.tool()
-def set_disassembly_comment(address: str, comment: str) -> str:
+    comment_type must be one of:
+      - "eol"        – End-of-line comment in disassembly
+      - "pre"        – Pre comment (shown before the code unit / in decompiler)
+      - "post"       – Post comment (shown after the code unit)
+      - "plate"      – Plate comment (block header / divider)
+      - "repeatable" – Repeatable comment (propagates through references)
     """
-    Set a comment for a given address in the function disassembly.
-    """
-    return safe_post("set_disassembly_comment", {"address": address, "comment": comment})
+    return safe_post("set_comment", {
+        "address": address,
+        "comment": comment,
+        "comment_type": comment_type
+    })
 
 @mcp.tool()
 def rename_function_by_address(function_address: str, new_name: str) -> str:
@@ -364,7 +368,12 @@ def batch_rename_functions(renames: list[dict]) -> str:
 def batch_set_comments(comments: list[dict], comment_type: str = "decompiler") -> str:
     """
     Set multiple comments in one transaction.
-    comment_type: "decompiler" (PRE_COMMENT) or "disassembly" (EOL_COMMENT).
+    comment_type must be one of:
+      - "eol" or "disassembly"  – End-of-line comment in disassembly
+      - "pre" or "decompiler"   – Pre comment (shown before the code unit / in decompiler)  [default]
+      - "post"                  – Post comment (shown after the code unit)
+      - "plate"                 – Plate comment (block header / divider)
+      - "repeatable"            – Repeatable comment (propagates through references)
     Each comment: {"address": "0x...", "comment": "text"}
     """
     return safe_post_json("batch_set_comments", {

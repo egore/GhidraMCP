@@ -246,19 +246,18 @@ public class GhidraMCPPlugin extends Plugin {
             sendResponse(exchange, disassembleFunction(address));
         });
 
-        server.createContext("/set_decompiler_comment", exchange -> {
+        server.createContext("/set_comment", exchange -> {
             Map<String, String> params = parsePostParams(exchange);
             String address = params.get("address");
             String comment = params.get("comment");
-            boolean success = setDecompilerComment(address, comment);
-            sendResponse(exchange, success ? "Comment set successfully" : "Failed to set comment");
-        });
-
-        server.createContext("/set_disassembly_comment", exchange -> {
-            Map<String, String> params = parsePostParams(exchange);
-            String address = params.get("address");
-            String comment = params.get("comment");
-            boolean success = setDisassemblyComment(address, comment);
+            String commentTypeStr = params.get("comment_type");
+            int commentType = resolveCommentType(commentTypeStr);
+            if (commentType < 0) {
+                sendResponse(exchange, "Invalid comment_type: " + commentTypeStr +
+                    ". Supported: eol, pre, post, plate, repeatable");
+                return;
+            }
+            boolean success = setCommentAtAddress(address, comment, commentType, "Set " + commentTypeStr + " comment");
             sendResponse(exchange, success ? "Comment set successfully" : "Failed to set comment");
         });
 
@@ -1134,17 +1133,30 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Set a comment for a given address in the function pseudocode
+     * Resolve a comment type string to a CodeUnit comment type constant.
+     * Supported values: "eol", "pre", "post", "plate", "repeatable".
+     * For backwards compatibility, "decompiler" maps to PRE_COMMENT and
+     * "disassembly" maps to EOL_COMMENT.
+     * Returns -1 if the string is not recognized.
      */
-    private boolean setDecompilerComment(String addressStr, String comment) {
-        return setCommentAtAddress(addressStr, comment, CodeUnit.PRE_COMMENT, "Set decompiler comment");
-    }
-
-    /**
-     * Set a comment for a given address in the function disassembly
-     */
-    private boolean setDisassemblyComment(String addressStr, String comment) {
-        return setCommentAtAddress(addressStr, comment, CodeUnit.EOL_COMMENT, "Set disassembly comment");
+    private int resolveCommentType(String commentTypeStr) {
+        if (commentTypeStr == null) return -1;
+        switch (commentTypeStr.toLowerCase()) {
+            case "eol":
+            case "disassembly":
+                return CodeUnit.EOL_COMMENT;
+            case "pre":
+            case "decompiler":
+                return CodeUnit.PRE_COMMENT;
+            case "post":
+                return CodeUnit.POST_COMMENT;
+            case "plate":
+                return CodeUnit.PLATE_COMMENT;
+            case "repeatable":
+                return CodeUnit.REPEATABLE_COMMENT;
+            default:
+                return -1;
+        }
     }
 
     /**
@@ -2202,8 +2214,11 @@ public class GhidraMCPPlugin extends Plugin {
         try {
             JsonObject body = JsonParser.parseString(jsonBody).getAsJsonObject();
             String commentTypeStr = body.has("comment_type") ? body.get("comment_type").getAsString() : "decompiler";
-            int commentType = "disassembly".equalsIgnoreCase(commentTypeStr)
-                    ? CodeUnit.EOL_COMMENT : CodeUnit.PRE_COMMENT;
+            int commentType = resolveCommentType(commentTypeStr);
+            if (commentType < 0) {
+                return "Invalid comment_type: " + commentTypeStr +
+                    ". Supported: eol, pre, post, plate, repeatable, decompiler, disassembly";
+            }
             JsonArray comments = body.getAsJsonArray("comments");
 
             SwingUtilities.invokeAndWait(() -> {
