@@ -413,6 +413,73 @@ def apply_struct(address: str, struct_name: str) -> str:
     """
     return safe_post("apply_struct", {"address": address, "struct_name": struct_name})
 
+@mcp.tool()
+def rename_variable_by_address(function_address: str, old_name: str, new_name: str) -> str:
+    """
+    Rename a local variable within a function, identified by the function's address.
+    """
+    return safe_post("rename_variable", {
+        "function_address": function_address,
+        "old_name": old_name,
+        "new_name": new_name
+    })
+
+@mcp.tool()
+def update_struct_field(struct_name: str, field_name: str, new_type: str) -> str:
+    """
+    Update the data type of a field in an existing structure.
+    """
+    return safe_post_json("update_struct_field", {
+        "struct_name": struct_name,
+        "field_name": field_name,
+        "new_type": new_type
+    })
+
+@mcp.tool()
+def batch_rename_data(renames: list[dict]) -> str:
+    """
+    Rename multiple data labels in one transaction.
+    Each item: {"address": "0x...", "new_name": "MyLabel"}
+    """
+    return safe_post_json("batch_rename_data", renames)
+
+@mcp.tool()
+def batch_create_function(functions: list[dict]) -> str:
+    """
+    Create multiple functions in one transaction.
+    Each item: {"address": "0x...", "name": "optional_name"}
+    If a function already exists at the address and name is provided, it is renamed.
+    """
+    return safe_post_json("batch_create_function", functions)
+
+@mcp.tool()
+def create_function(address: str, name: str = None) -> str:
+    """
+    Create a new function at the given address. Optionally provide a name.
+    If a function already exists and a name is given, it will be renamed.
+    """
+    data = {"address": address}
+    if name:
+        data["name"] = name
+    return safe_post("create_function", data)
+
+@mcp.tool()
+def set_primary_label(address: str, name: str) -> str:
+    """
+    Set (or replace) the primary label at an address.
+    All existing user-defined labels at the address are deleted first.
+    """
+    return safe_post("set_primary_label", {"address": address, "name": name})
+
+@mcp.tool()
+def batch_set_primary_labels(labels: list[dict]) -> str:
+    """
+    Set primary labels at multiple addresses in one transaction.
+    Each item: {"address": "0x...", "name": "MyLabel"}
+    Existing user-defined labels at each address are deleted first.
+    """
+    return safe_post_json("batch_set_primary_labels", labels)
+
 def main():
     parser = argparse.ArgumentParser(description="MCP server for Ghidra")
     parser.add_argument("--ghidra-server", type=str, default=DEFAULT_GHIDRA_SERVER,
