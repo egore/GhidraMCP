@@ -415,6 +415,31 @@ def create_struct(name: str, fields: list[dict]) -> str:
     })
 
 @mcp.tool()
+def create_function_definition(name: str, return_type: str = "void", parameters: list[dict] = None,
+                               calling_convention: str = None, category_path: str = None) -> str:
+    """
+    Create a function definition data type in the Data Type Manager.
+    This is a reusable type (like a typedef for a function signature) that can be
+    referenced by struct fields, e.g. as function pointers in VTable structures.
+
+    Parameters:
+        name: Name of the function definition type (e.g. "MyCallback")
+        return_type: Return type (default "void")
+        parameters: List of parameter dicts, each with "name" and "type" keys.
+                    Example: [{"name": "self", "type": "void *"}, {"name": "count", "type": "int"}]
+        calling_convention: Optional calling convention (e.g. "__stdcall", "__thiscall")
+        category_path: Optional category path in the data type manager (e.g. "/VTables")
+    """
+    payload = {"name": name, "return_type": return_type}
+    if parameters is not None:
+        payload["parameters"] = parameters
+    if calling_convention is not None:
+        payload["calling_convention"] = calling_convention
+    if category_path is not None:
+        payload["category_path"] = category_path
+    return safe_post_json("create_function_definition", payload)
+
+@mcp.tool()
 def apply_struct(address: str, struct_name: str) -> str:
     """
     Apply a previously created struct type at a memory address.

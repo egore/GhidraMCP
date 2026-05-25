@@ -57,6 +57,10 @@ import ghidra.program.model.data.FloatDataType;
 import ghidra.program.model.data.DoubleDataType;
 import ghidra.program.model.data.BooleanDataType;
 import ghidra.program.model.data.VoidDataType;
+import ghidra.program.model.data.FunctionDefinitionDataType;
+import ghidra.program.model.data.ParameterDefinition;
+import ghidra.program.model.data.ParameterDefinitionImpl;
+import ghidra.program.model.data.GenericCallingConvention;
 
 import com.google.gson.JsonArray;
 import com.google.gson.JsonElement;
@@ -447,6 +451,12 @@ public class GhidraMCPPlugin extends Plugin {
         server.createContext("/create_struct", exchange -> {
             String body = readRequestBody(exchange);
             String result = createStruct(body);
+            sendResponse(exchange, result);
+        });
+
+        server.createContext("/create_function_definition", exchange -> {
+            String body = readRequestBody(exchange);
+            String result = createFunctionDefinition(body);
             sendResponse(exchange, result);
         });
 
@@ -2394,6 +2404,103 @@ public class GhidraMCPPlugin extends Plugin {
                 } catch (Exception e) {
                     Msg.error(this, "Error creating struct", e);
                     result.set("Error creating struct: " + e.getMessage());
+                } finally {
+                    program.endTransaction(tx, success);
+                }
+            });
+        } catch (Exception e) {
+            result.set("Error parsing JSON: " + e.getMessage());
+        }
+
+        return result.get();
+    }
+
+    /**
+     * Create a function definition data type in the Data Type Manager.
+     * This creates a reusable type (like a typedef for a function pointer)
+     * that can be referenced by struct fields (e.g. VTable entries).
+     *
+     * JSON body:
+     * {
+     *   "name": "MyCallback",                          // required
+     *   "return_type": "int",                           // optional, default "void"
+     *   "parameters": [                                 // optional
+     *     {"name": "param1", "type": "int"},
+     *     {"name": "param2", "type": "char *"}
+     *   ],
+     *   "calling_convention": "default",                // optional
+     *   "category_path": "/VTables"                     // optional, DTM category
+     * }
+     */
+    private String createFunctionDefinition(String jsonBody) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (jsonBody == null || jsonBody.isEmpty()) return "JSON body is required";
+
+        AtomicReference<String> result = new AtomicReference<>("Failed to create function definition");
+
+        try {
+            JsonObject body = JsonParser.parseString(jsonBody).getAsJsonObject();
+            String name = body.get("name").getAsString();
+            String returnTypeName = body.has("return_type") ? body.get("return_type").getAsString() : "void";
+            JsonArray params = body.has("parameters") ? body.getAsJsonArray("parameters") : new JsonArray();
+            String callingConvention = body.has("calling_convention")
+                    ? body.get("calling_convention").getAsString() : null;
+            String categoryPathStr = body.has("category_path")
+                    ? body.get("category_path").getAsString() : null;
+
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Create function definition");
+                boolean success = false;
+                try {
+                    DataTypeManager dtm = program.getDataTypeManager();
+
+                    // Resolve the category path
+                    CategoryPath catPath = (categoryPathStr != null && !categoryPathStr.isEmpty())
+                            ? new CategoryPath(categoryPathStr)
+                            : CategoryPath.ROOT;
+
+                    // Create the function definition data type
+                    FunctionDefinitionDataType funcDef = new FunctionDefinitionDataType(catPath, name, dtm);
+
+                    // Set return type
+                    DataType returnType = resolveDataType(dtm, returnTypeName);
+                    funcDef.setReturnType(returnType);
+
+                    // Set parameters
+                    if (params.size() > 0) {
+                        ParameterDefinition[] paramDefs = new ParameterDefinition[params.size()];
+                        for (int i = 0; i < params.size(); i++) {
+                            JsonObject param = params.get(i).getAsJsonObject();
+                            String paramName = param.has("name") ? param.get("name").getAsString() : ("param_" + i);
+                            String paramTypeName = param.get("type").getAsString();
+                            DataType paramType = resolveDataType(dtm, paramTypeName);
+                            paramDefs[i] = new ParameterDefinitionImpl(paramName, paramType, null);
+                        }
+                        funcDef.setArguments(paramDefs);
+                    }
+
+                    // Set calling convention if specified
+                    if (callingConvention != null && !callingConvention.isEmpty()
+                            && !callingConvention.equalsIgnoreCase("default")) {
+                        try {
+                            funcDef.setGenericCallingConvention(
+                                GenericCallingConvention.getGenericCallingConvention(callingConvention));
+                        } catch (Exception e) {
+                            Msg.warn(this, "Unknown calling convention '" + callingConvention
+                                    + "', using default. Error: " + e.getMessage());
+                        }
+                    }
+
+                    // Add to the data type manager
+                    DataType added = dtm.addDataType(funcDef, DataTypeConflictHandler.REPLACE_HANDLER);
+
+                    success = true;
+                    result.set("Function definition '" + name + "' created at " + added.getPathName()
+                            + " — signature: " + added.toString());
+                } catch (Exception e) {
+                    Msg.error(this, "Error creating function definition", e);
+                    result.set("Error creating function definition: " + e.getMessage());
                 } finally {
                     program.endTransaction(tx, success);
                 }
