@@ -156,6 +156,30 @@ def search_functions_by_name(query: str, offset: int = 0, limit: int = 100) -> l
     return safe_get("searchFunctions", {"query": query, "offset": offset, "limit": limit})
 
 @mcp.tool()
+def search_data_types(query: str = None, kind: str = "all", offset: int = 0, limit: int = 100) -> list:
+    """
+    Search for data types in the Data Type Manager by name and/or kind.
+
+    Args:
+        query: Optional substring to match in data type names (case-insensitive).
+               If omitted, all data types of the requested kind are returned.
+        kind: Filter by data type kind. One of:
+              "function_definition", "struct", "enum", "typedef",
+              "pointer", "union", "all" (default: "all")
+        offset: Pagination offset (default: 0)
+        limit: Maximum number of results to return (default: 100)
+
+    Returns:
+        List of matching data types with their kind, path, name, and size.
+    """
+    params = {"offset": offset, "limit": limit}
+    if query:
+        params["query"] = query
+    if kind:
+        params["kind"] = kind
+    return safe_get("search_data_types", params)
+
+@mcp.tool()
 def rename_variable(function_name: str, old_name: str, new_name: str) -> str:
     """
     Rename a local variable within a function.

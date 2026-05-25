@@ -57,6 +57,7 @@ import ghidra.program.model.data.FloatDataType;
 import ghidra.program.model.data.DoubleDataType;
 import ghidra.program.model.data.BooleanDataType;
 import ghidra.program.model.data.VoidDataType;
+import ghidra.program.model.data.FunctionDefinition;
 import ghidra.program.model.data.FunctionDefinitionDataType;
 import ghidra.program.model.data.ParameterDefinition;
 import ghidra.program.model.data.ParameterDefinitionImpl;
@@ -216,6 +217,15 @@ public class GhidraMCPPlugin extends Plugin {
             int offset = parseIntOrDefault(qparams.get("offset"), 0);
             int limit = parseIntOrDefault(qparams.get("limit"), 100);
             sendResponse(exchange, searchFunctionsByName(searchTerm, offset, limit));
+        });
+
+        server.createContext("/search_data_types", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            String query = qparams.get("query");
+            String kind = qparams.get("kind");
+            int offset = parseIntOrDefault(qparams.get("offset"), 0);
+            int limit = parseIntOrDefault(qparams.get("limit"), 100);
+            sendResponse(exchange, searchDataTypes(query, kind, offset, limit));
         });
 
         // New API endpoints based on requirements
@@ -651,7 +661,106 @@ public class GhidraMCPPlugin extends Plugin {
             return "No functions matching '" + searchTerm + "'";
         }
         return paginateList(matches, offset, limit);
-    }    
+    }
+
+    /**
+     * Search for data types in the Data Type Manager, optionally filtered by kind and name.
+     *
+     * @param query  Optional substring to match against the data type name (case-insensitive).
+     *               If null or empty, all data types of the requested kind are returned.
+     * @param kind   One of: "function_definition", "struct", "enum", "typedef", "pointer", "all".
+     *               If null or empty, defaults to "all".
+     * @param offset Pagination offset
+     * @param limit  Pagination limit
+     */
+    private String searchDataTypes(String query, String kind, int offset, int limit) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+
+        if (kind == null || kind.isEmpty()) kind = "all";
+        String kindLower = kind.toLowerCase();
+
+        DataTypeManager dtm = program.getDataTypeManager();
+        Iterator<DataType> allTypes = dtm.getAllDataTypes();
+
+        List<String> matches = new ArrayList<>();
+        while (allTypes.hasNext()) {
+            DataType dt = allTypes.next();
+
+            // Filter by kind
+            if (!matchesKind(dt, kindLower)) continue;
+
+            // Filter by name substring (case-insensitive)
+            if (query != null && !query.isEmpty()) {
+                if (!dt.getName().toLowerCase().contains(query.toLowerCase())) continue;
+            }
+
+            matches.add(formatDataTypeEntry(dt));
+        }
+
+        Collections.sort(matches);
+
+        if (matches.isEmpty()) {
+            String msg = "No data types found";
+            if (query != null && !query.isEmpty()) msg += " matching '" + query + "'";
+            if (!"all".equals(kindLower)) msg += " of kind '" + kind + "'";
+            return msg;
+        }
+        return paginateList(matches, offset, limit);
+    }
+
+    /**
+     * Check whether a DataType matches the requested kind filter.
+     */
+    private boolean matchesKind(DataType dt, String kindLower) {
+        switch (kindLower) {
+            case "function_definition":
+                return dt instanceof FunctionDefinition;
+            case "struct":
+            case "structure":
+                return dt instanceof ghidra.program.model.data.Structure;
+            case "enum":
+                return dt instanceof ghidra.program.model.data.Enum;
+            case "typedef":
+                return dt instanceof ghidra.program.model.data.TypeDef;
+            case "pointer":
+                return dt instanceof ghidra.program.model.data.Pointer;
+            case "union":
+                return dt instanceof ghidra.program.model.data.Union;
+            case "all":
+                return true;
+            default:
+                return true;
+        }
+    }
+
+    /**
+     * Format a data type into a human-readable line for listing/search results.
+     */
+    private String formatDataTypeEntry(DataType dt) {
+        String kind;
+        if (dt instanceof FunctionDefinition) {
+            kind = "FunctionDefinition";
+        } else if (dt instanceof ghidra.program.model.data.Structure) {
+            kind = "Structure";
+        } else if (dt instanceof ghidra.program.model.data.Enum) {
+            kind = "Enum";
+        } else if (dt instanceof ghidra.program.model.data.Union) {
+            kind = "Union";
+        } else if (dt instanceof ghidra.program.model.data.TypeDef) {
+            kind = "TypeDef";
+        } else if (dt instanceof ghidra.program.model.data.Pointer) {
+            kind = "Pointer";
+        } else {
+            kind = dt.getClass().getSimpleName();
+        }
+
+        return String.format("[%s] %s (%s, %d bytes)",
+            kind,
+            dt.getPathName(),
+            dt.getName(),
+            dt.getLength());
+    }
 
     // ----------------------------------------------------------------------------------
     // Logic for rename, decompile, etc.
@@ -2460,8 +2569,21 @@ public class GhidraMCPPlugin extends Plugin {
                             ? new CategoryPath(categoryPathStr)
                             : CategoryPath.ROOT;
 
-                    // Create the function definition data type
-                    FunctionDefinitionDataType funcDef = new FunctionDefinitionDataType(catPath, name, dtm);
+                    // Check for an existing function definition to update in-place
+                    // (preserves references from struct fields, etc.)
+                    DataType existing = findDataTypeByNameInAllCategories(dtm, name);
+                    boolean isUpdate = false;
+                    FunctionDefinitionDataType funcDef;
+
+                    if (existing instanceof FunctionDefinitionDataType
+                            && existing.getCategoryPath().equals(catPath)) {
+                        // Update existing definition in-place
+                        funcDef = (FunctionDefinitionDataType) existing;
+                        isUpdate = true;
+                    } else {
+                        // Create new function definition
+                        funcDef = new FunctionDefinitionDataType(catPath, name, dtm);
+                    }
 
                     // Set return type
                     DataType returnType = resolveDataType(dtm, returnTypeName);
@@ -2478,6 +2600,9 @@ public class GhidraMCPPlugin extends Plugin {
                             paramDefs[i] = new ParameterDefinitionImpl(paramName, paramType, null);
                         }
                         funcDef.setArguments(paramDefs);
+                    } else {
+                        // Explicitly clear parameters when none are provided during an update
+                        funcDef.setArguments(new ParameterDefinition[0]);
                     }
 
                     // Set calling convention if specified
@@ -2492,11 +2617,17 @@ public class GhidraMCPPlugin extends Plugin {
                         }
                     }
 
-                    // Add to the data type manager
-                    DataType added = dtm.addDataType(funcDef, DataTypeConflictHandler.REPLACE_HANDLER);
+                    // Add to the data type manager (only needed for new definitions)
+                    DataType added;
+                    if (isUpdate) {
+                        added = funcDef;
+                    } else {
+                        added = dtm.addDataType(funcDef, DataTypeConflictHandler.REPLACE_HANDLER);
+                    }
 
                     success = true;
-                    result.set("Function definition '" + name + "' created at " + added.getPathName()
+                    String verb = isUpdate ? "updated" : "created";
+                    result.set("Function definition '" + name + "' " + verb + " at " + added.getPathName()
                             + " — signature: " + added.toString());
                 } catch (Exception e) {
                     Msg.error(this, "Error creating function definition", e);
