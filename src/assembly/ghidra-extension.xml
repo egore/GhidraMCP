@@ -17,9 +17,10 @@
     
     <fileSets>
         <!-- 1) Copy extension.properties and Module.manifest into the top level 
-               of a folder named GhidraMCP/ (the actual extension folder). -->
+               of a folder named GhidraMCP/ (the actual extension folder).
+               Use the build output directory so Maven resource filtering is applied. -->
         <fileSet>
-            <directory>src/main/resources</directory>
+            <directory>${project.build.outputDirectory}</directory>
             <includes>
                 <include>extension.properties</include>
                 <include>Module.manifest</include>
