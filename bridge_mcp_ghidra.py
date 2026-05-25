@@ -459,15 +459,22 @@ def rename_variable_by_address(function_address: str, old_name: str, new_name: s
     })
 
 @mcp.tool()
-def update_struct_field(struct_name: str, field_name: str, new_type: str) -> str:
+def update_struct_field(struct_name: str, field_name: str, new_type: str = None, new_name: str = None) -> str:
     """
-    Update the data type of a field in an existing structure.
+    Update the data type and/or name of a field in an existing structure.
+    At least one of new_type or new_name must be provided.
     """
-    return safe_post_json("update_struct_field", {
+    if new_type is None and new_name is None:
+        return "Error: at least one of new_type or new_name must be provided"
+    payload = {
         "struct_name": struct_name,
         "field_name": field_name,
-        "new_type": new_type
-    })
+    }
+    if new_type is not None:
+        payload["new_type"] = new_type
+    if new_name is not None:
+        payload["new_name"] = new_name
+    return safe_post_json("update_struct_field", payload)
 
 @mcp.tool()
 def batch_rename_data(renames: list[dict]) -> str:
