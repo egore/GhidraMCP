@@ -1799,11 +1799,36 @@ public class GhidraMCPPlugin extends Plugin {
      * @return The resolved DataType, or null if not found
      */
     private DataType resolveDataType(DataTypeManager dtm, String typeName) {
-        // First try to find exact match in all categories
+        // Handle C-style pointer suffix(es): e.g. "SomeType *" or "SomeType **"
+        // Strip trailing whitespace and count/remove trailing '*' characters
+        String trimmed = typeName.trim();
+        int pointerDepth = 0;
+        while (trimmed.endsWith("*")) {
+            pointerDepth++;
+            trimmed = trimmed.substring(0, trimmed.length() - 1).trim();
+        }
+        if (pointerDepth > 0) {
+            DataType baseType = resolveDataType(dtm, trimmed);
+            for (int i = 0; i < pointerDepth; i++) {
+                baseType = new PointerDataType(baseType);
+            }
+            return baseType;
+        }
+
+        // First try to find exact match by name in all categories
         DataType dataType = findDataTypeByNameInAllCategories(dtm, typeName);
         if (dataType != null) {
             Msg.info(this, "Found exact data type match: " + dataType.getPathName());
             return dataType;
+        }
+
+        // Try as a path in the data type manager (with leading '/' if not already present)
+        // This handles paths like "d3d9h/functions/IDirect3DDevice9/SomeType"
+        String pathToTry = typeName.startsWith("/") ? typeName : "/" + typeName;
+        DataType pathType = dtm.getDataType(pathToTry);
+        if (pathType != null) {
+            Msg.info(this, "Found data type by path: " + pathType.getPathName());
+            return pathType;
         }
 
         // Check for Windows-style pointer types (PXXX)
@@ -1867,15 +1892,9 @@ public class GhidraMCPPlugin extends Plugin {
             case "void":
                 return new VoidDataType(dtm);
             default:
-                // Try as a direct path
-                DataType directType = dtm.getDataType("/" + typeName);
-                if (directType != null) {
-                    return directType;
-                }
-
-                // Fallback to int if we couldn't find it
-                Msg.warn(this, "Unknown type: " + typeName + ", defaulting to int");
-                return new IntegerDataType(dtm);
+                // Type not found anywhere — throw so callers get a clear error
+                // instead of silently corrupting data with a wrong type
+                throw new IllegalArgumentException("Cannot resolve data type: '" + typeName + "'");
         }
     }
     
