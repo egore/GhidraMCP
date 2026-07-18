@@ -2814,16 +2814,72 @@ public class GhidraMCPPlugin extends Plugin {
                     int targetLen = -1;
                     DataType oldDt = null;
                     for (ghidra.program.model.data.DataTypeComponent comp : comps) {
-                        if (fieldName.equals(comp.getFieldName())) {
+                        String compFieldName = comp.getFieldName();
+                        // Match explicit field names directly
+                        if (compFieldName != null && fieldName.equals(compFieldName)) {
                             targetIdx = comp.getOrdinal();
                             targetOffset = comp.getOffset();
                             targetLen = comp.getLength();
                             oldDt = comp.getDataType();
                             break;
                         }
+                        // For auto-generated names (getFieldName() returns null),
+                        // Ghidra displays them as "field<ordinal>_0x<offset>".
+                        // Match against that synthetic name.
+                        if (compFieldName == null) {
+                            String autoName = "field" + comp.getOrdinal() +
+                                              "_0x" + Integer.toHexString(comp.getOffset());
+                            if (fieldName.equals(autoName)) {
+                                targetIdx = comp.getOrdinal();
+                                targetOffset = comp.getOffset();
+                                targetLen = comp.getLength();
+                                oldDt = comp.getDataType();
+                                break;
+                            }
+                        }
                     }
+
+                    // Also try matching by field_offset if the field name looks like
+                    // it could be an offset reference (e.g. "0x4" or "4")
                     if (targetIdx < 0) {
-                        result.set("Field '" + fieldName + "' not found in struct '" + structName + "'");
+                        // Try to parse field_name as an offset value
+                        try {
+                            int offsetVal;
+                            if (fieldName.startsWith("0x") || fieldName.startsWith("0X")) {
+                                offsetVal = Integer.parseInt(fieldName.substring(2), 16);
+                            } else {
+                                offsetVal = -1; // Don't match plain integers to avoid ambiguity
+                            }
+                            if (offsetVal >= 0) {
+                                for (ghidra.program.model.data.DataTypeComponent comp : comps) {
+                                    if (comp.getOffset() == offsetVal) {
+                                        targetIdx = comp.getOrdinal();
+                                        targetOffset = comp.getOffset();
+                                        targetLen = comp.getLength();
+                                        oldDt = comp.getDataType();
+                                        break;
+                                    }
+                                }
+                            }
+                        } catch (NumberFormatException ignored) {
+                            // Not a valid offset, continue to error
+                        }
+                    }
+
+                    if (targetIdx < 0) {
+                        // Build a helpful error listing available fields
+                        StringBuilder fieldList = new StringBuilder();
+                        for (ghidra.program.model.data.DataTypeComponent comp : comps) {
+                            String name = comp.getFieldName();
+                            if (name == null) {
+                                name = "field" + comp.getOrdinal() +
+                                       "_0x" + Integer.toHexString(comp.getOffset());
+                            }
+                            if (fieldList.length() > 0) fieldList.append(", ");
+                            fieldList.append(name);
+                        }
+                        result.set("Field '" + fieldName + "' not found in struct '" + structName +
+                                   "'. Available fields: " + fieldList);
                         return;
                     }
                     DataType effectiveDt = (newType != null) ? resolveDataType(dtm, newType) : oldDt;

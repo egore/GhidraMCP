@@ -525,6 +525,11 @@ def update_struct_field(struct_name: str, field_name: str, new_type: str = None,
     """
     Update the data type and/or name of a field in an existing structure.
     At least one of new_type or new_name must be provided.
+
+    field_name can be:
+      - An explicit field name (e.g. "myField")
+      - An auto-generated field name (e.g. "field1_0x4") for unnamed fields
+      - A hex offset (e.g. "0x4") to match a field by its offset in the struct
     """
     if new_type is None and new_name is None:
         return "Error: at least one of new_type or new_name must be provided"
