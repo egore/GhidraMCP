@@ -2565,13 +2565,19 @@ public class GhidraMCPPlugin extends Plugin {
             String name = body.get("name").getAsString();
             int size = body.has("size") ? body.get("size").getAsInt() : 4;
             JsonArray values = body.getAsJsonArray("values");
+            String categoryPathStr = body.has("category_path")
+                    ? body.get("category_path").getAsString() : null;
 
             SwingUtilities.invokeAndWait(() -> {
                 int tx = program.startTransaction("Create enum");
                 boolean success = false;
                 try {
                     DataTypeManager dtm = program.getDataTypeManager();
-                    EnumDataType enumType = new EnumDataType(name, size);
+
+                    CategoryPath catPath = (categoryPathStr != null && !categoryPathStr.isEmpty())
+                            ? new CategoryPath(categoryPathStr)
+                            : CategoryPath.ROOT;
+                    EnumDataType enumType = new EnumDataType(catPath, name, size, dtm);
 
                     for (JsonElement el : values) {
                         JsonObject entry = el.getAsJsonObject();
@@ -2608,13 +2614,19 @@ public class GhidraMCPPlugin extends Plugin {
             JsonObject body = JsonParser.parseString(jsonBody).getAsJsonObject();
             String name = body.get("name").getAsString();
             JsonArray fields = body.getAsJsonArray("fields");
+            String categoryPathStr = body.has("category_path")
+                    ? body.get("category_path").getAsString() : null;
 
             SwingUtilities.invokeAndWait(() -> {
                 int tx = program.startTransaction("Create struct");
                 boolean success = false;
                 try {
                     DataTypeManager dtm = program.getDataTypeManager();
-                    StructureDataType struct = new StructureDataType(name, 0);
+
+                    CategoryPath catPath = (categoryPathStr != null && !categoryPathStr.isEmpty())
+                            ? new CategoryPath(categoryPathStr)
+                            : CategoryPath.ROOT;
+                    StructureDataType struct = new StructureDataType(catPath, name, 0, dtm);
 
                     for (JsonElement el : fields) {
                         JsonObject field = el.getAsJsonObject();

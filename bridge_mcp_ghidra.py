@@ -437,27 +437,44 @@ def create_label(address: str, name: str, namespace: str = None) -> str:
     return safe_post("create_label", data)
 
 @mcp.tool()
-def create_enum(name: str, values: list[dict], size: int = 4) -> str:
+def create_enum(name: str, values: list[dict], size: int = 4, category_path: str = None) -> str:
     """
     Create an enum data type. Each value: {"name": "MEMBER_NAME", "value": 0}
+
+    Parameters:
+        name: Name of the enum
+        values: List of value dicts with "name" and "value" keys
+        size: Size in bytes (default: 4)
+        category_path: Optional category path in the data type manager (e.g. "/MyCategory")
     """
-    return safe_post_json("create_enum", {
+    payload = {
         "name": name,
         "size": size,
         "values": values
-    })
+    }
+    if category_path is not None:
+        payload["category_path"] = category_path
+    return safe_post_json("create_enum", payload)
 
 @mcp.tool()
-def create_struct(name: str, fields: list[dict]) -> str:
+def create_struct(name: str, fields: list[dict], category_path: str = None) -> str:
     """
     Create a structure data type.
     Each field: {"name": "field_name", "type": "int", "size": 4}
     If size is omitted, the type's natural size is used.
+
+    Parameters:
+        name: Name of the struct
+        fields: List of field dicts with "name", "type", and optional "size" keys
+        category_path: Optional category path in the data type manager (e.g. "/MyCategory")
     """
-    return safe_post_json("create_struct", {
+    payload = {
         "name": name,
         "fields": fields
-    })
+    }
+    if category_path is not None:
+        payload["category_path"] = category_path
+    return safe_post_json("create_struct", payload)
 
 @mcp.tool()
 def create_function_definition(name: str, return_type: str = "void", parameters: list[dict] = None,
