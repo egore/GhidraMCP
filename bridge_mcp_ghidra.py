@@ -544,6 +544,39 @@ def update_struct_field(struct_name: str, field_name: str, new_type: str = None,
     return safe_post_json("update_struct_field", payload)
 
 @mcp.tool()
+def rename_data_type(old_name: str, new_name: str) -> str:
+    """
+    Rename an existing data type (struct, enum, typedef, union, function
+    definition, etc.) in the Data Type Manager.
+
+    The type is looked up by its current name across all categories. Renaming
+    updates the type everywhere it is used (struct fields, variables, etc.).
+    """
+    return safe_post("rename_data_type", {"old_name": old_name, "new_name": new_name})
+
+@mcp.tool()
+def move_data_type(data_type_name: str, category_path: str) -> str:
+    """
+    Move an existing data type (struct, enum, typedef, union, function
+    definition, etc.) to a different category in the Data Type Manager.
+
+    The category is created automatically if it does not exist.
+
+    Parameters:
+        data_type_name: Name of the data type to move (looked up across all categories)
+        category_path: Target category path (e.g. "/MyCategory", "/VTables/IDirect3D")
+    """
+    return safe_post("move_data_type", {"data_type_name": data_type_name, "category_path": category_path})
+
+@mcp.tool()
+def rename_struct(old_name: str, new_name: str) -> str:
+    """
+    Rename an existing structure data type. Convenience alias for
+    rename_data_type that works specifically with structs.
+    """
+    return safe_post("rename_data_type", {"old_name": old_name, "new_name": new_name})
+
+@mcp.tool()
 def batch_rename_data(renames: list[dict]) -> str:
     """
     Rename multiple data labels in one transaction.

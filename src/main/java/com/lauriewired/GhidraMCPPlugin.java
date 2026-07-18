@@ -29,6 +29,7 @@ import ghidra.program.model.listing.LocalVariableImpl;
 import ghidra.program.model.listing.ParameterImpl;
 import ghidra.util.exception.DuplicateNameException;
 import ghidra.util.exception.InvalidInputException;
+import ghidra.util.InvalidNameException;
 import ghidra.framework.plugintool.PluginInfo;
 import ghidra.framework.plugintool.util.PluginStatus;
 import ghidra.program.util.ProgramLocation;
@@ -479,6 +480,26 @@ public class GhidraMCPPlugin extends Plugin {
         server.createContext("/update_struct_field", exchange -> {
             String body = readRequestBody(exchange);
             String result = updateStructField(body);
+            sendResponse(exchange, result);
+        });
+
+        // Rename a data type (struct, enum, typedef, union, function definition, etc.)
+        // POST params: old_name, new_name
+        server.createContext("/rename_data_type", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String oldName = params.get("old_name");
+            String newName = params.get("new_name");
+            String result = renameDataType(oldName, newName);
+            sendResponse(exchange, result);
+        });
+
+        // Move a data type to a different category.
+        // POST params: data_type_name, category_path
+        server.createContext("/move_data_type", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String dataTypeName = params.get("data_type_name");
+            String categoryPath = params.get("category_path");
+            String result = moveDataType(dataTypeName, categoryPath);
             sendResponse(exchange, result);
         });
 
@@ -2905,6 +2926,113 @@ public class GhidraMCPPlugin extends Plugin {
             });
         } catch (Exception e) {
             result.set("Error parsing JSON: " + e.getMessage());
+        }
+
+        return result.get();
+    }
+
+    /**
+     * Rename an existing data type (struct, enum, typedef, union, function definition, etc.)
+     * found in the Data Type Manager. Looks the type up by its current name in all categories.
+     */
+    private String renameDataType(String oldName, String newName) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (oldName == null || oldName.isEmpty()) return "old_name is required";
+        if (newName == null || newName.isEmpty()) return "new_name is required";
+
+        AtomicReference<String> result = new AtomicReference<>("Failed to rename data type");
+
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Rename data type");
+                boolean success = false;
+                try {
+                    DataTypeManager dtm = program.getDataTypeManager();
+                    DataType dt = findDataTypeByNameInAllCategories(dtm, oldName);
+                    if (dt == null) {
+                        result.set("Data type '" + oldName + "' not found");
+                        return;
+                    }
+                    // Reject if a type with the new name already exists in the same category
+                    DataType existing = dtm.getDataType(dt.getCategoryPath(), newName);
+                    if (existing != null) {
+                        result.set("A data type named '" + newName + "' already exists in category '" +
+                                   dt.getCategoryPath().getPath() + "'");
+                        return;
+                    }
+                    String oldPath = dt.getPathName();
+                    dt.setName(newName);
+                    success = true;
+                    result.set("Renamed data type '" + oldPath + "' to '" + dt.getPathName() + "'");
+                } catch (InvalidNameException e) {
+                    result.set("Invalid name '" + newName + "': " + e.getMessage());
+                } catch (DuplicateNameException e) {
+                    result.set("A data type named '" + newName + "' already exists: " + e.getMessage());
+                } catch (Exception e) {
+                    Msg.error(this, "Error renaming data type", e);
+                    result.set("Error: " + e.getMessage());
+                } finally {
+                    program.endTransaction(tx, success);
+                }
+            });
+        } catch (Exception e) {
+            result.set("Error: " + e.getMessage());
+        }
+
+        return result.get();
+    }
+
+    /**
+     * Move an existing data type (struct, enum, typedef, union, function definition, etc.)
+     * to a different category in the Data Type Manager. The category is created if it
+     * does not already exist.
+     */
+    private String moveDataType(String dataTypeName, String categoryPathStr) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (dataTypeName == null || dataTypeName.isEmpty()) return "data_type_name is required";
+        if (categoryPathStr == null || categoryPathStr.isEmpty()) return "category_path is required";
+
+        AtomicReference<String> result = new AtomicReference<>("Failed to move data type");
+
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Move data type");
+                boolean success = false;
+                try {
+                    DataTypeManager dtm = program.getDataTypeManager();
+                    DataType dt = findDataTypeByNameInAllCategories(dtm, dataTypeName);
+                    if (dt == null) {
+                        result.set("Data type '" + dataTypeName + "' not found");
+                        return;
+                    }
+                    CategoryPath newCatPath = new CategoryPath(categoryPathStr);
+                    CategoryPath oldCatPath = dt.getCategoryPath();
+
+                    if (oldCatPath.equals(newCatPath)) {
+                        result.set("Data type '" + dataTypeName + "' is already in category '" +
+                                   categoryPathStr + "'");
+                        return;
+                    }
+
+                    // Create the target category if it does not exist, then move
+                    ghidra.program.model.data.Category targetCategory =
+                        dtm.createCategory(newCatPath);
+                    targetCategory.moveDataType(dt, DataTypeConflictHandler.REPLACE_HANDLER);
+
+                    success = true;
+                    result.set("Moved data type '" + dataTypeName + "' from '" +
+                               oldCatPath.getPath() + "' to '" + categoryPathStr + "'");
+                } catch (Exception e) {
+                    Msg.error(this, "Error moving data type", e);
+                    result.set("Error: " + e.getMessage());
+                } finally {
+                    program.endTransaction(tx, success);
+                }
+            });
+        } catch (Exception e) {
+            result.set("Error: " + e.getMessage());
         }
 
         return result.get();
