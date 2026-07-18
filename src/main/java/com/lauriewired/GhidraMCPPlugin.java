@@ -228,6 +228,12 @@ public class GhidraMCPPlugin extends Plugin {
             sendResponse(exchange, searchDataTypes(query, kind, offset, limit));
         });
 
+        server.createContext("/get_data_type_details", exchange -> {
+            Map<String, String> qparams = parseQueryParams(exchange);
+            String name = qparams.get("name");
+            sendResponse(exchange, getDataTypeDetails(name));
+        });
+
         // New API endpoints based on requirements
         
         server.createContext("/get_function_by_address", exchange -> {
@@ -760,6 +766,105 @@ public class GhidraMCPPlugin extends Plugin {
             dt.getPathName(),
             dt.getName(),
             dt.getLength());
+    }
+
+    /**
+     * Get detailed information about a data type by name, including its fields/members.
+     */
+    private String getDataTypeDetails(String name) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (name == null || name.isEmpty()) return "Error: 'name' parameter is required";
+
+        DataTypeManager dtm = program.getDataTypeManager();
+        DataType dt = findDataTypeByNameInAllCategories(dtm, name);
+        if (dt == null) return "Data type '" + name + "' not found";
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("Name: ").append(dt.getName()).append("\n");
+        sb.append("Path: ").append(dt.getPathName()).append("\n");
+        sb.append("Size: ").append(dt.getLength()).append(" bytes\n");
+        sb.append("Description: ").append(dt.getDescription() != null ? dt.getDescription() : "").append("\n");
+
+        if (dt instanceof ghidra.program.model.data.Structure) {
+            ghidra.program.model.data.Structure struct = (ghidra.program.model.data.Structure) dt;
+            sb.append("Kind: Structure\n");
+            sb.append("Alignment: ").append(struct.getAlignment()).append("\n");
+            ghidra.program.model.data.DataTypeComponent[] comps = struct.getDefinedComponents();
+            sb.append("Fields (").append(comps.length).append("):\n");
+            for (ghidra.program.model.data.DataTypeComponent comp : comps) {
+                String fieldName = comp.getFieldName();
+                if (fieldName == null) {
+                    fieldName = "field" + comp.getOrdinal() +
+                                "_0x" + Integer.toHexString(comp.getOffset());
+                }
+                sb.append(String.format("  0x%x (%d bytes) %s %s",
+                    comp.getOffset(),
+                    comp.getLength(),
+                    comp.getDataType().getName(),
+                    fieldName));
+                if (comp.getComment() != null && !comp.getComment().isEmpty()) {
+                    sb.append("  // ").append(comp.getComment());
+                }
+                sb.append("\n");
+            }
+        } else if (dt instanceof ghidra.program.model.data.Enum) {
+            ghidra.program.model.data.Enum enumDt = (ghidra.program.model.data.Enum) dt;
+            sb.append("Kind: Enum\n");
+            String[] names = enumDt.getNames();
+            sb.append("Members (").append(names.length).append("):\n");
+            for (String memberName : names) {
+                sb.append(String.format("  %s = 0x%x (%d)\n",
+                    memberName, enumDt.getValue(memberName), enumDt.getValue(memberName)));
+            }
+        } else if (dt instanceof ghidra.program.model.data.Union) {
+            ghidra.program.model.data.Union union = (ghidra.program.model.data.Union) dt;
+            sb.append("Kind: Union\n");
+            ghidra.program.model.data.DataTypeComponent[] comps = union.getDefinedComponents();
+            sb.append("Members (").append(comps.length).append("):\n");
+            for (ghidra.program.model.data.DataTypeComponent comp : comps) {
+                String fieldName = comp.getFieldName();
+                if (fieldName == null) {
+                    fieldName = "field" + comp.getOrdinal();
+                }
+                sb.append(String.format("  (%d bytes) %s %s",
+                    comp.getLength(),
+                    comp.getDataType().getName(),
+                    fieldName));
+                if (comp.getComment() != null && !comp.getComment().isEmpty()) {
+                    sb.append("  // ").append(comp.getComment());
+                }
+                sb.append("\n");
+            }
+        } else if (dt instanceof FunctionDefinition) {
+            FunctionDefinition funcDef = (FunctionDefinition) dt;
+            sb.append("Kind: FunctionDefinition\n");
+            sb.append("Return type: ").append(funcDef.getReturnType().getName()).append("\n");
+            String cc = funcDef.getCallingConventionName();
+            if (cc != null && !cc.isEmpty()) {
+                sb.append("Calling convention: ").append(cc).append("\n");
+            }
+            ParameterDefinition[] params = funcDef.getArguments();
+            sb.append("Parameters (").append(params.length).append("):\n");
+            for (ParameterDefinition param : params) {
+                sb.append(String.format("  %s %s",
+                    param.getDataType().getName(),
+                    param.getName()));
+                if (param.getComment() != null && !param.getComment().isEmpty()) {
+                    sb.append("  // ").append(param.getComment());
+                }
+                sb.append("\n");
+            }
+        } else if (dt instanceof ghidra.program.model.data.TypeDef) {
+            ghidra.program.model.data.TypeDef typeDef = (ghidra.program.model.data.TypeDef) dt;
+            sb.append("Kind: TypeDef\n");
+            sb.append("Base type: ").append(typeDef.getBaseDataType().getName()).append("\n");
+            sb.append("Base type path: ").append(typeDef.getBaseDataType().getPathName()).append("\n");
+        } else {
+            sb.append("Kind: ").append(dt.getClass().getSimpleName()).append("\n");
+        }
+
+        return sb.toString().trim();
     }
 
     // ----------------------------------------------------------------------------------

@@ -160,6 +160,10 @@ def search_data_types(query: str = None, kind: str = "all", offset: int = 0, lim
     """
     Search for data types in the Data Type Manager by name and/or kind.
 
+    Returns only summary information (kind, path, name, size) for each match.
+    To get the fields of a struct, members of an enum, or other details,
+    use get_data_type_details() with the name from these results.
+
     Args:
         query: Optional substring to match in data type names (case-insensitive).
                If omitted, all data types of the requested kind are returned.
@@ -178,6 +182,23 @@ def search_data_types(query: str = None, kind: str = "all", offset: int = 0, lim
     if kind:
         params["kind"] = kind
     return safe_get("search_data_types", params)
+
+@mcp.tool()
+def get_data_type_details(name: str) -> str:
+    """
+    Get detailed information about a data type by name, including its
+    fields (for structs/unions), members (for enums), parameters (for
+    function definitions), or base type (for typedefs).
+
+    Args:
+        name: Name of the data type to look up (e.g. "MyStruct", "DWORD")
+
+    Returns:
+        Detailed description of the data type including all fields/members.
+    """
+    if not name:
+        return "Error: name is required"
+    return "\n".join(safe_get("get_data_type_details", {"name": name}))
 
 @mcp.tool()
 def rename_variable(function_name: str, old_name: str, new_name: str) -> str:
