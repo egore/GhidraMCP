@@ -503,6 +503,16 @@ public class GhidraMCPPlugin extends Plugin {
             sendResponse(exchange, result);
         });
 
+        // Rename a class/namespace symbol in the symbol table.
+        // POST params: old_name, new_name
+        server.createContext("/rename_namespace", exchange -> {
+            Map<String, String> params = parsePostParams(exchange);
+            String oldName = params.get("old_name");
+            String newName = params.get("new_name");
+            String result = renameNamespace(oldName, newName);
+            sendResponse(exchange, result);
+        });
+
         server.createContext("/apply_struct", exchange -> {
             Map<String, String> params = parsePostParams(exchange);
             String address = params.get("address");
@@ -3026,6 +3036,73 @@ public class GhidraMCPPlugin extends Plugin {
                                oldCatPath.getPath() + "' to '" + categoryPathStr + "'");
                 } catch (Exception e) {
                     Msg.error(this, "Error moving data type", e);
+                    result.set("Error: " + e.getMessage());
+                } finally {
+                    program.endTransaction(tx, success);
+                }
+            });
+        } catch (Exception e) {
+            result.set("Error: " + e.getMessage());
+        }
+
+        return result.get();
+    }
+
+    /**
+     * Rename a class/namespace symbol in the symbol table. Searches all symbols
+     * for a namespace (class, namespace, etc.) whose name matches oldName and
+     * renames its underlying symbol. This covers C++ classes and other namespaces
+     * enumerated by list_classes / list_namespaces.
+     */
+    private String renameNamespace(String oldName, String newName) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (oldName == null || oldName.isEmpty()) return "old_name is required";
+        if (newName == null || newName.isEmpty()) return "new_name is required";
+
+        AtomicReference<String> result = new AtomicReference<>("Failed to rename namespace");
+
+        try {
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Rename namespace");
+                boolean success = false;
+                try {
+                    SymbolTable symTable = program.getSymbolTable();
+
+                    // Find the namespace by name. Try a direct lookup in the global
+                    // namespace first, then fall back to scanning all symbols.
+                    Namespace ns = symTable.getNamespace(oldName, null);
+                    if (ns == null) {
+                        for (Symbol symbol : symTable.getAllSymbols(true)) {
+                            Namespace candidate = symbol.getParentNamespace();
+                            if (candidate != null && !candidate.isGlobal()
+                                    && candidate.getName().equals(oldName)) {
+                                ns = candidate;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (ns == null || ns.isGlobal()) {
+                        result.set("Namespace/class '" + oldName + "' not found");
+                        return;
+                    }
+
+                    Symbol nsSymbol = ns.getSymbol();
+                    if (nsSymbol == null) {
+                        result.set("Namespace '" + oldName + "' has no renamable symbol");
+                        return;
+                    }
+
+                    nsSymbol.setName(newName, SourceType.USER_DEFINED);
+                    success = true;
+                    result.set("Renamed namespace/class '" + oldName + "' to '" + newName + "'");
+                } catch (InvalidInputException e) {
+                    result.set("Invalid name '" + newName + "': " + e.getMessage());
+                } catch (DuplicateNameException e) {
+                    result.set("A namespace named '" + newName + "' already exists: " + e.getMessage());
+                } catch (Exception e) {
+                    Msg.error(this, "Error renaming namespace", e);
                     result.set("Error: " + e.getMessage());
                 } finally {
                     program.endTransaction(tx, success);

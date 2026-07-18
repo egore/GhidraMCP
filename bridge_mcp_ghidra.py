@@ -577,6 +577,26 @@ def rename_struct(old_name: str, new_name: str) -> str:
     return safe_post("rename_data_type", {"old_name": old_name, "new_name": new_name})
 
 @mcp.tool()
+def rename_namespace(old_name: str, new_name: str) -> str:
+    """
+    Rename a class/namespace symbol in the symbol table.
+
+    Covers C++ classes and other namespaces enumerated by list_classes /
+    list_namespaces. This renames the namespace symbol itself (and thus the
+    namespace path of all symbols contained within it). Note: this does NOT
+    rename a struct data type of the same name; use rename_struct for that.
+    """
+    return safe_post("rename_namespace", {"old_name": old_name, "new_name": new_name})
+
+@mcp.tool()
+def rename_class(old_name: str, new_name: str) -> str:
+    """
+    Rename a class. Convenience alias for rename_namespace that works with the
+    class names returned by list_classes.
+    """
+    return safe_post("rename_namespace", {"old_name": old_name, "new_name": new_name})
+
+@mcp.tool()
 def batch_rename_data(renames: list[dict]) -> str:
     """
     Rename multiple data labels in one transaction.
