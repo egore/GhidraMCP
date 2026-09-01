@@ -1962,7 +1962,7 @@ public class GhidraMCPPlugin extends Plugin {
         if (pointerDepth > 0) {
             DataType baseType = resolveDataType(dtm, trimmed);
             for (int i = 0; i < pointerDepth; i++) {
-                baseType = new PointerDataType(baseType);
+                baseType = new PointerDataType(baseType, dtm);
             }
             return baseType;
         }
@@ -1989,17 +1989,17 @@ public class GhidraMCPPlugin extends Plugin {
 
             // Special case for PVOID
             if (baseTypeName.equals("VOID")) {
-                return new PointerDataType(new VoidDataType(dtm));
+                return new PointerDataType(new VoidDataType(dtm), dtm);
             }
 
             // Try to find the base type
             DataType baseType = findDataTypeByNameInAllCategories(dtm, baseTypeName);
             if (baseType != null) {
-                return new PointerDataType(baseType);
+                return new PointerDataType(baseType, dtm);
             }
 
             Msg.warn(this, "Base type not found for " + typeName + ", defaulting to void*");
-            return new PointerDataType(new VoidDataType(dtm));
+            return new PointerDataType(new VoidDataType(dtm), dtm);
         }
 
         // Handle common built-in types using concrete classes (avoids dtm path lookup failures)
