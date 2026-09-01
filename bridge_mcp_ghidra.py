@@ -523,8 +523,9 @@ def rename_variable_by_address(function_address: str, old_name: str, new_name: s
 @mcp.tool()
 def update_struct_field(struct_name: str, field_name: str, new_type: str = None, new_name: str = None) -> str:
     """
-    Update the data type and/or name of a field in an existing structure.
-    At least one of new_type or new_name must be provided.
+    Update the data type and/or name of a field that already exists in a
+    structure. At least one of new_type or new_name must be provided.
+    To add a field that does not exist yet, use add_struct_field.
 
     field_name can be:
       - An explicit field name (e.g. "myField")
@@ -542,6 +543,89 @@ def update_struct_field(struct_name: str, field_name: str, new_type: str = None,
     if new_name is not None:
         payload["new_name"] = new_name
     return safe_post_json("update_struct_field", payload)
+
+@mcp.tool()
+def add_struct_field(struct_name: str, field_name: str, field_type: str,
+                     offset: str = None, size: int = None, comment: str = None,
+                     overwrite: bool = False) -> str:
+    """
+    Add a new field to an existing structure, in place.
+
+    Unlike recreating the struct with create_struct, this preserves the struct's
+    identity, so variables, applied data and other structs that reference it keep
+    working. Use update_struct_field to change a field that already exists.
+
+    Args:
+        struct_name: Name of the existing struct
+        field_type: Type of the new field (e.g. "int", "MyType *")
+        offset: Optional offset for the field, hex (e.g. "0x10") or decimal.
+                If omitted, the field is appended to the end of the struct.
+                If given, the field is placed at that offset, consuming undefined
+                padding bytes and leaving the struct's overall size unchanged.
+        size: Optional explicit size in bytes (defaults to the type's natural size)
+        comment: Optional comment for the field
+        overwrite: Allow the new field to replace existing defined field(s) at
+                   the target offset. Defaults to False, in which case an
+                   overlapping placement is rejected with an error.
+    """
+    field = {"name": field_name, "type": field_type}
+    if offset is not None:
+        field["offset"] = offset
+    if size is not None:
+        field["size"] = size
+    if comment is not None:
+        field["comment"] = comment
+    payload = {"struct_name": struct_name, "fields": [field]}
+    if overwrite:
+        payload["overwrite"] = True
+    return safe_post_json("add_struct_fields", payload)
+
+@mcp.tool()
+def add_struct_fields(struct_name: str, fields: list[dict], overwrite: bool = False) -> str:
+    """
+    Add multiple fields to an existing structure in a single transaction.
+
+    Each field: {"name": "count", "type": "int", "offset": "0x10", "size": 4,
+                 "comment": "optional"}
+    Only "name" and "type" are required. Fields without an "offset" are appended
+    to the end of the struct; fields with an "offset" are placed there, consuming
+    undefined padding bytes.
+
+    If any field fails, the whole transaction is rolled back and the struct is
+    left unchanged.
+
+    Args:
+        struct_name: Name of the existing struct
+        fields: List of field dicts as described above
+        overwrite: Allow new fields to replace existing defined fields at their
+                   target offsets (default False)
+    """
+    payload = {"struct_name": struct_name, "fields": fields}
+    if overwrite:
+        payload["overwrite"] = True
+    return safe_post_json("add_struct_fields", payload)
+
+@mcp.tool()
+def delete_struct_field(struct_name: str, field_name: str, shrink: bool = False) -> str:
+    """
+    Delete a field from an existing structure, in place.
+
+    field_name can be an explicit field name, an auto-generated name for an
+    unnamed field (e.g. "field1_0x4"), or a hex offset (e.g. "0x4").
+
+    Args:
+        struct_name: Name of the existing struct
+        field_name: Field to delete
+        shrink: If False (default), the field's bytes are cleared to undefined
+                and every later field keeps its current offset — the right
+                behaviour when the struct mirrors a real memory layout.
+                If True, the field is removed outright, later fields shift up
+                and the struct shrinks.
+    """
+    payload = {"struct_name": struct_name, "field_name": field_name}
+    if shrink:
+        payload["shrink"] = True
+    return safe_post_json("delete_struct_field", payload)
 
 @mcp.tool()
 def rename_data_type(old_name: str, new_name: str) -> str:

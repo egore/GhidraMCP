@@ -46,6 +46,7 @@ import ghidra.program.model.data.Undefined1DataType;
 import ghidra.program.model.data.EnumDataType;
 import ghidra.program.model.data.StructureDataType;
 import ghidra.program.model.data.CategoryPath;
+import ghidra.program.model.data.DataTypeComponent;
 import ghidra.program.model.data.IntegerDataType;
 import ghidra.program.model.data.UnsignedIntegerDataType;
 import ghidra.program.model.data.ShortDataType;
@@ -480,6 +481,21 @@ public class GhidraMCPPlugin extends Plugin {
         server.createContext("/update_struct_field", exchange -> {
             String body = readRequestBody(exchange);
             String result = updateStructField(body);
+            sendResponse(exchange, result);
+        });
+
+        // Add one or more new fields to an existing struct, in place, without
+        // having to recreate (and thereby unlink) the struct.
+        server.createContext("/add_struct_fields", exchange -> {
+            String body = readRequestBody(exchange);
+            String result = addStructFields(body);
+            sendResponse(exchange, result);
+        });
+
+        // Remove a field from an existing struct, in place.
+        server.createContext("/delete_struct_field", exchange -> {
+            String body = readRequestBody(exchange);
+            String result = deleteStructField(body);
             sendResponse(exchange, result);
         });
 
@@ -2810,6 +2826,357 @@ public class GhidraMCPPlugin extends Plugin {
         return result.get();
     }
 
+    /**
+     * Look up a component of a structure by field name, by the auto-generated
+     * name Ghidra shows for unnamed fields ("field&lt;ordinal&gt;_0x&lt;offset&gt;"),
+     * or by a hex offset string such as "0x8".
+     *
+     * @return the matching component, or null if no field matches
+     */
+    private DataTypeComponent findStructComponent(ghidra.program.model.data.Structure struct,
+                                                  String fieldName) {
+        if (fieldName == null || fieldName.isEmpty()) return null;
+
+        DataTypeComponent[] comps = struct.getDefinedComponents();
+        for (DataTypeComponent comp : comps) {
+            String compFieldName = comp.getFieldName();
+            // Match explicit field names directly
+            if (compFieldName != null) {
+                if (fieldName.equals(compFieldName)) return comp;
+                continue;
+            }
+            // For auto-generated names (getFieldName() returns null),
+            // Ghidra displays them as "field<ordinal>_0x<offset>".
+            String autoName = "field" + comp.getOrdinal() +
+                              "_0x" + Integer.toHexString(comp.getOffset());
+            if (fieldName.equals(autoName)) return comp;
+        }
+
+        // Fall back to matching by offset when the name looks like a hex offset
+        // (e.g. "0x4"). Plain integers are not matched, to avoid ambiguity with
+        // field names that happen to be numeric.
+        int offsetVal = parseHexOffset(fieldName);
+        if (offsetVal >= 0) {
+            for (DataTypeComponent comp : comps) {
+                if (comp.getOffset() == offsetVal) return comp;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Parse a hex offset string such as "0x18". Returns -1 when the value is not
+     * a "0x"-prefixed non-negative hex number.
+     */
+    private int parseHexOffset(String value) {
+        if (value == null) return -1;
+        String trimmed = value.trim();
+        if (!trimmed.startsWith("0x") && !trimmed.startsWith("0X")) return -1;
+        try {
+            int parsed = Integer.parseInt(trimmed.substring(2), 16);
+            return parsed >= 0 ? parsed : -1;
+        } catch (NumberFormatException e) {
+            return -1;
+        }
+    }
+
+    /**
+     * Build a comma-separated list of the field names of a structure, using the
+     * auto-generated "field&lt;ordinal&gt;_0x&lt;offset&gt;" name for unnamed fields.
+     * Used to make "field not found" errors actionable.
+     */
+    private String listStructFieldNames(ghidra.program.model.data.Structure struct) {
+        StringBuilder fieldList = new StringBuilder();
+        for (DataTypeComponent comp : struct.getDefinedComponents()) {
+            String name = comp.getFieldName();
+            if (name == null) {
+                name = "field" + comp.getOrdinal() +
+                       "_0x" + Integer.toHexString(comp.getOffset());
+            }
+            if (fieldList.length() > 0) fieldList.append(", ");
+            fieldList.append(name);
+        }
+        return fieldList.length() > 0 ? fieldList.toString() : "(none)";
+    }
+
+    /**
+     * Add one or more fields to an existing structure, in place, so that all
+     * existing references to the struct (variables, applied data, other structs)
+     * are preserved. This is the counterpart to {@link #updateStructField}, which
+     * can only modify fields that already exist.
+     *
+     * JSON body:
+     * {
+     *   "struct_name": "MyStruct",         // required
+     *   "fields": [                        // required, non-empty
+     *     {
+     *       "name": "count",               // required
+     *       "type": "int",                 // required
+     *       "size": 4,                     // optional, defaults to the type's length
+     *       "offset": "0x10",              // optional, hex or decimal; append if omitted
+     *       "comment": "..."               // optional
+     *     }
+     *   ],
+     *   "overwrite": false                 // optional, allow replacing defined fields
+     * }
+     *
+     * Fields without an offset are appended to the end of the struct. Fields with
+     * an offset are placed at that offset, consuming undefined padding bytes; the
+     * struct's overall length is left unchanged. Placing a field over an existing
+     * defined field requires "overwrite": true.
+     *
+     * All fields are added in a single transaction: if any field fails, the whole
+     * transaction is rolled back so the struct is never left half-updated.
+     */
+    private String addStructFields(String jsonBody) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (jsonBody == null || jsonBody.isEmpty()) return "JSON body is required";
+
+        AtomicReference<String> result = new AtomicReference<>("Failed to add struct fields");
+
+        try {
+            JsonObject body = JsonParser.parseString(jsonBody).getAsJsonObject();
+            if (!body.has("struct_name")) return "'struct_name' is required";
+            if (!body.has("fields")) return "'fields' is required";
+            String structName = body.get("struct_name").getAsString();
+            JsonArray fields = body.getAsJsonArray("fields");
+            boolean overwrite = body.has("overwrite") && body.get("overwrite").getAsBoolean();
+
+            if (fields.size() == 0) return "'fields' must contain at least one field";
+
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Add struct fields");
+                boolean success = false;
+                try {
+                    DataTypeManager dtm = program.getDataTypeManager();
+                    DataType existing = findDataTypeByNameInAllCategories(dtm, structName);
+                    if (!(existing instanceof ghidra.program.model.data.Structure)) {
+                        result.set(existing == null
+                                ? "Struct '" + structName + "' not found"
+                                : "Data type '" + structName + "' is not a structure");
+                        return;
+                    }
+                    ghidra.program.model.data.Structure struct =
+                        (ghidra.program.model.data.Structure) existing;
+
+                    StringBuilder added = new StringBuilder();
+                    for (JsonElement el : fields) {
+                        JsonObject field = el.getAsJsonObject();
+                        if (!field.has("name") || !field.has("type")) {
+                            result.set("Each field requires both 'name' and 'type'");
+                            return;
+                        }
+                        String fieldName = field.get("name").getAsString();
+                        String fieldType = field.get("type").getAsString();
+                        String comment = field.has("comment") ? field.get("comment").getAsString() : null;
+
+                        DataType dt = resolveDataType(dtm, fieldType);
+                        int fieldSize = field.has("size") ? field.get("size").getAsInt() : dt.getLength();
+                        if (fieldSize <= 0) {
+                            result.set("Cannot determine a size for field '" + fieldName +
+                                       "' of type '" + fieldType + "'; specify an explicit 'size'");
+                            return;
+                        }
+
+                        // Reject duplicate field names up front so the struct keeps
+                        // unique, addressable field names.
+                        if (findStructComponent(struct, fieldName) != null) {
+                            result.set("Struct '" + structName + "' already has a field named '" +
+                                       fieldName + "'; use update_struct_field to change it");
+                            return;
+                        }
+
+                        DataTypeComponent comp;
+                        if (field.has("offset")) {
+                            // In a packed struct Ghidra computes every offset itself and
+                            // repacks after each edit, so an explicit offset cannot be honoured.
+                            if (struct.isPackingEnabled()) {
+                                result.set("Struct '" + structName + "' has packing enabled, so field " +
+                                           "offsets are computed by Ghidra and cannot be set explicitly. " +
+                                           "Add field '" + fieldName + "' without an offset to append it.");
+                                return;
+                            }
+                            String offsetStr = field.get("offset").getAsString();
+                            int offset = parseHexOffset(offsetStr);
+                            if (offset < 0) {
+                                try {
+                                    offset = Integer.parseInt(offsetStr.trim());
+                                } catch (NumberFormatException e) {
+                                    offset = -1;
+                                }
+                            }
+                            if (offset < 0) {
+                                result.set("Invalid offset '" + offsetStr + "' for field '" + fieldName +
+                                           "'; expected a hex value like \"0x10\" or a decimal value");
+                                return;
+                            }
+
+                            // Refuse to silently clobber existing defined fields.
+                            if (!overwrite) {
+                                String clobbered = findDefinedFieldsInRange(struct, offset, fieldSize);
+                                if (clobbered != null) {
+                                    result.set("Field '" + fieldName + "' at offset 0x" +
+                                               Integer.toHexString(offset) + " (" + fieldSize +
+                                               " bytes) would overwrite existing field(s): " + clobbered +
+                                               ". Pass overwrite=true to replace them.");
+                                    return;
+                                }
+                            }
+
+                            // Grow the struct if the new field extends past its end,
+                            // otherwise replaceAtOffset would fail.
+                            int required = offset + fieldSize;
+                            if (required > struct.getLength()) {
+                                struct.growStructure(required - struct.getLength());
+                            }
+                            comp = struct.replaceAtOffset(offset, dt, fieldSize, fieldName, comment);
+                        } else {
+                            comp = struct.add(dt, fieldSize, fieldName, comment);
+                        }
+
+                        if (added.length() > 0) added.append(", ");
+                        added.append(fieldName)
+                             .append(" @0x").append(Integer.toHexString(comp.getOffset()))
+                             .append(" (").append(dt.getName())
+                             .append(", ").append(comp.getLength()).append(" bytes)");
+                    }
+
+                    success = true;
+                    result.set("Added " + fields.size() + " field(s) to '" + structName + "': " + added +
+                               ". Struct size is now " + struct.getLength() + " bytes");
+                } catch (Exception e) {
+                    Msg.error(this, "Error adding struct fields", e);
+                    result.set("Error adding struct fields: " + e.getMessage());
+                } finally {
+                    program.endTransaction(tx, success);
+                }
+            });
+        } catch (Exception e) {
+            result.set("Error parsing JSON: " + e.getMessage());
+        }
+
+        return result.get();
+    }
+
+    /**
+     * List the defined (non-undefined) fields of a structure that overlap the
+     * byte range [offset, offset + length).
+     *
+     * @return a comma-separated description of the overlapping fields, or null
+     *         if the range only covers undefined/padding bytes
+     */
+    private String findDefinedFieldsInRange(ghidra.program.model.data.Structure struct,
+                                            int offset, int length) {
+        StringBuilder sb = new StringBuilder();
+        for (DataTypeComponent comp : struct.getDefinedComponents()) {
+            if (comp.isUndefined()) continue;
+            // Overlap test between [offset, offset+length) and the component's extent
+            if (comp.getOffset() < offset + length && offset <= comp.getEndOffset()) {
+                String name = comp.getFieldName();
+                if (name == null) {
+                    name = "field" + comp.getOrdinal() +
+                           "_0x" + Integer.toHexString(comp.getOffset());
+                }
+                if (sb.length() > 0) sb.append(", ");
+                sb.append(name).append(" @0x").append(Integer.toHexString(comp.getOffset()));
+            }
+        }
+        return sb.length() > 0 ? sb.toString() : null;
+    }
+
+    /**
+     * Delete a field from an existing structure, in place.
+     *
+     * JSON body:
+     * {
+     *   "struct_name": "MyStruct",   // required
+     *   "field_name": "count",       // required; name, auto-name, or hex offset
+     *   "shrink": false              // optional; see below
+     * }
+     *
+     * By default the field's bytes are cleared to undefined, which keeps every
+     * later field at its current offset — the right behaviour when the struct
+     * mirrors a real memory layout. With "shrink": true the component is removed
+     * outright and all later fields shift up, shrinking the struct.
+     */
+    private String deleteStructField(String jsonBody) {
+        Program program = getCurrentProgram();
+        if (program == null) return "No program loaded";
+        if (jsonBody == null || jsonBody.isEmpty()) return "JSON body is required";
+
+        AtomicReference<String> result = new AtomicReference<>("Failed to delete struct field");
+
+        try {
+            JsonObject body = JsonParser.parseString(jsonBody).getAsJsonObject();
+            if (!body.has("struct_name")) return "'struct_name' is required";
+            if (!body.has("field_name")) return "'field_name' is required";
+            String structName = body.get("struct_name").getAsString();
+            String fieldName = body.get("field_name").getAsString();
+            boolean shrink = body.has("shrink") && body.get("shrink").getAsBoolean();
+
+            SwingUtilities.invokeAndWait(() -> {
+                int tx = program.startTransaction("Delete struct field");
+                boolean success = false;
+                try {
+                    DataTypeManager dtm = program.getDataTypeManager();
+                    DataType existing = findDataTypeByNameInAllCategories(dtm, structName);
+                    if (!(existing instanceof ghidra.program.model.data.Structure)) {
+                        result.set(existing == null
+                                ? "Struct '" + structName + "' not found"
+                                : "Data type '" + structName + "' is not a structure");
+                        return;
+                    }
+                    ghidra.program.model.data.Structure struct =
+                        (ghidra.program.model.data.Structure) existing;
+
+                    DataTypeComponent target = findStructComponent(struct, fieldName);
+                    if (target == null) {
+                        result.set("Field '" + fieldName + "' not found in struct '" + structName +
+                                   "'. Available fields: " + listStructFieldNames(struct));
+                        return;
+                    }
+
+                    int ordinal = target.getOrdinal();
+                    int offset = target.getOffset();
+                    int length = target.getLength();
+
+                    // A packed struct repacks after every edit, so its fields always shift
+                    // up on removal; clearing to undefined padding is not possible there.
+                    boolean packed = struct.isPackingEnabled();
+                    if (shrink || packed) {
+                        struct.delete(ordinal);
+                    } else {
+                        struct.clearComponent(ordinal);
+                    }
+
+                    success = true;
+                    String effect;
+                    if (packed) {
+                        effect = "; struct is packed, so later fields shifted up";
+                    } else if (shrink) {
+                        effect = "; later fields shifted up";
+                    } else {
+                        effect = "; bytes left undefined";
+                    }
+                    result.set("Deleted field '" + fieldName + "' (offset 0x" +
+                               Integer.toHexString(offset) + ", " + length + " bytes) from '" +
+                               structName + "'" + effect +
+                               ". Struct size is now " + struct.getLength() + " bytes");
+                } catch (Exception e) {
+                    Msg.error(this, "Error deleting struct field", e);
+                    result.set("Error deleting struct field: " + e.getMessage());
+                } finally {
+                    program.endTransaction(tx, success);
+                }
+            });
+        } catch (Exception e) {
+            result.set("Error parsing JSON: " + e.getMessage());
+        }
+
+        return result.get();
+    }
+
     private String updateStructField(String jsonBody) {
         Program program = getCurrentProgram();
         if (program == null) return "No program loaded";
@@ -2839,80 +3206,15 @@ public class GhidraMCPPlugin extends Plugin {
                         return;
                     }
                     ghidra.program.model.data.Structure struct = (ghidra.program.model.data.Structure) existing;
-                    ghidra.program.model.data.DataTypeComponent[] comps = struct.getDefinedComponents();
-                    int targetIdx = -1;
-                    int targetOffset = -1;
-                    int targetLen = -1;
-                    DataType oldDt = null;
-                    for (ghidra.program.model.data.DataTypeComponent comp : comps) {
-                        String compFieldName = comp.getFieldName();
-                        // Match explicit field names directly
-                        if (compFieldName != null && fieldName.equals(compFieldName)) {
-                            targetIdx = comp.getOrdinal();
-                            targetOffset = comp.getOffset();
-                            targetLen = comp.getLength();
-                            oldDt = comp.getDataType();
-                            break;
-                        }
-                        // For auto-generated names (getFieldName() returns null),
-                        // Ghidra displays them as "field<ordinal>_0x<offset>".
-                        // Match against that synthetic name.
-                        if (compFieldName == null) {
-                            String autoName = "field" + comp.getOrdinal() +
-                                              "_0x" + Integer.toHexString(comp.getOffset());
-                            if (fieldName.equals(autoName)) {
-                                targetIdx = comp.getOrdinal();
-                                targetOffset = comp.getOffset();
-                                targetLen = comp.getLength();
-                                oldDt = comp.getDataType();
-                                break;
-                            }
-                        }
-                    }
-
-                    // Also try matching by field_offset if the field name looks like
-                    // it could be an offset reference (e.g. "0x4" or "4")
-                    if (targetIdx < 0) {
-                        // Try to parse field_name as an offset value
-                        try {
-                            int offsetVal;
-                            if (fieldName.startsWith("0x") || fieldName.startsWith("0X")) {
-                                offsetVal = Integer.parseInt(fieldName.substring(2), 16);
-                            } else {
-                                offsetVal = -1; // Don't match plain integers to avoid ambiguity
-                            }
-                            if (offsetVal >= 0) {
-                                for (ghidra.program.model.data.DataTypeComponent comp : comps) {
-                                    if (comp.getOffset() == offsetVal) {
-                                        targetIdx = comp.getOrdinal();
-                                        targetOffset = comp.getOffset();
-                                        targetLen = comp.getLength();
-                                        oldDt = comp.getDataType();
-                                        break;
-                                    }
-                                }
-                            }
-                        } catch (NumberFormatException ignored) {
-                            // Not a valid offset, continue to error
-                        }
-                    }
-
-                    if (targetIdx < 0) {
-                        // Build a helpful error listing available fields
-                        StringBuilder fieldList = new StringBuilder();
-                        for (ghidra.program.model.data.DataTypeComponent comp : comps) {
-                            String name = comp.getFieldName();
-                            if (name == null) {
-                                name = "field" + comp.getOrdinal() +
-                                       "_0x" + Integer.toHexString(comp.getOffset());
-                            }
-                            if (fieldList.length() > 0) fieldList.append(", ");
-                            fieldList.append(name);
-                        }
+                    DataTypeComponent target = findStructComponent(struct, fieldName);
+                    if (target == null) {
                         result.set("Field '" + fieldName + "' not found in struct '" + structName +
-                                   "'. Available fields: " + fieldList);
+                                   "'. Available fields: " + listStructFieldNames(struct));
                         return;
                     }
+                    int targetIdx = target.getOrdinal();
+                    int targetOffset = target.getOffset();
+                    DataType oldDt = target.getDataType();
                     DataType effectiveDt = (newType != null) ? resolveDataType(dtm, newType) : oldDt;
                     String effectiveName = (newName != null) ? newName : fieldName;
                     struct.replace(targetIdx, effectiveDt, effectiveDt.getLength(), effectiveName, null);
