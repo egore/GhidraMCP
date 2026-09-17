@@ -280,8 +280,18 @@ public class GhidraMCPPlugin extends Plugin {
                     ". Supported: eol, pre, post, plate, repeatable");
                 return;
             }
-            boolean success = setCommentAtAddress(address, comment, commentType, "Set " + commentTypeStr + " comment");
-            sendResponse(exchange, success ? "Comment set successfully" : "Failed to set comment");
+            if (comment == null) {
+                sendResponse(exchange, "Error: 'comment' is required (send an empty value to clear)");
+                return;
+            }
+            boolean clearing = comment.isEmpty();
+            boolean success = setCommentAtAddress(address, comment, commentType,
+                (clearing ? "Clear " : "Set ") + commentTypeStr + " comment");
+            if (clearing) {
+                sendResponse(exchange, success ? "Comment cleared successfully" : "Failed to clear comment");
+            } else {
+                sendResponse(exchange, success ? "Comment set successfully" : "Failed to set comment");
+            }
         });
 
         server.createContext("/rename_function_by_address", exchange -> {
@@ -1375,13 +1385,16 @@ public class GhidraMCPPlugin extends Plugin {
     }    
 
     /**
-     * Set a comment using the specified comment type (PRE_COMMENT or EOL_COMMENT)
+     * Set a comment using the specified comment type (PRE_COMMENT or EOL_COMMENT).
+     * An empty comment removes the comment: Ghidra stores "" as a blank comment
+     * rather than deleting it, so empty is normalized to null here.
      */
     private boolean setCommentAtAddress(String addressStr, String comment, int commentType, String transactionName) {
         Program program = getCurrentProgram();
         if (program == null) return false;
         if (addressStr == null || addressStr.isEmpty() || comment == null) return false;
 
+        final String newComment = comment.isEmpty() ? null : comment;
         AtomicBoolean success = new AtomicBoolean(false);
 
         try {
@@ -1389,7 +1402,7 @@ public class GhidraMCPPlugin extends Plugin {
                 int tx = program.startTransaction(transactionName);
                 try {
                     Address addr = program.getAddressFactory().getAddress(addressStr);
-                    program.getListing().setComment(addr, commentType, comment);
+                    program.getListing().setComment(addr, commentType, newComment);
                     success.set(true);
                 } catch (Exception e) {
                     Msg.error(this, "Error setting " + transactionName.toLowerCase(), e);
@@ -2586,7 +2599,14 @@ public class GhidraMCPPlugin extends Plugin {
                     for (JsonElement el : comments) {
                         JsonObject item = el.getAsJsonObject();
                         String addr = item.get("address").getAsString();
-                        String comment = item.get("comment").getAsString();
+                        JsonElement commentEl = item.get("comment");
+                        // A null or empty comment removes it: Ghidra stores "" as a
+                        // blank comment rather than deleting it.
+                        String comment = (commentEl == null || commentEl.isJsonNull())
+                                ? null : commentEl.getAsString();
+                        if (comment != null && comment.isEmpty()) {
+                            comment = null;
+                        }
 
                         try {
                             Address address = program.getAddressFactory().getAddress(addr);
@@ -3615,16 +3635,17 @@ public class GhidraMCPPlugin extends Plugin {
         if (query != null) {
             String[] pairs = query.split("&");
             for (String p : pairs) {
-                String[] kv = p.split("=");
-                if (kv.length == 2) {
-                    // URL decode parameter values
-                    try {
-                        String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
-                        String value = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
-                        result.put(key, value);
-                    } catch (Exception e) {
-                        Msg.error(this, "Error decoding URL parameter", e);
-                    }
+                if (p.isEmpty()) continue;
+                // Split on the first '=' only: a value may legitimately contain '='
+                // and may legitimately be empty ("key=").
+                String[] kv = p.split("=", 2);
+                try {
+                    String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
+                    String value = kv.length == 2
+                        ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : "";
+                    result.put(key, value);
+                } catch (Exception e) {
+                    Msg.error(this, "Error decoding URL parameter", e);
                 }
             }
         }
@@ -3646,16 +3667,18 @@ public class GhidraMCPPlugin extends Plugin {
         String bodyStr = new String(body, StandardCharsets.UTF_8);
         Map<String, String> params = new HashMap<>();
         for (String pair : bodyStr.split("&")) {
-            String[] kv = pair.split("=");
-            if (kv.length == 2) {
-                // URL decode parameter values
-                try {
-                    String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
-                    String value = URLDecoder.decode(kv[1], StandardCharsets.UTF_8);
-                    params.put(key, value);
-                } catch (Exception e) {
-                    Msg.error(this, "Error decoding URL parameter", e);
-                }
+            if (pair.isEmpty()) continue;
+            // Split on the first '=' only: a value may legitimately contain '='
+            // and may legitimately be empty ("key="), which is how an empty
+            // comment is sent in order to clear it.
+            String[] kv = pair.split("=", 2);
+            try {
+                String key = URLDecoder.decode(kv[0], StandardCharsets.UTF_8);
+                String value = kv.length == 2
+                    ? URLDecoder.decode(kv[1], StandardCharsets.UTF_8) : "";
+                params.put(key, value);
+            } catch (Exception e) {
+                Msg.error(this, "Error decoding URL parameter", e);
             }
         }
         return params;

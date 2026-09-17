@@ -258,6 +258,9 @@ def set_comment(address: str, comment: str, comment_type: str) -> str:
     """
     Set a comment of any type at a given address.
 
+    Pass an empty comment ("") to remove the comment at that address, or use
+    clear_comment().
+
     comment_type must be one of:
       - "eol"        – End-of-line comment in disassembly
       - "pre"        – Pre comment (shown before the code unit / in decompiler)
@@ -268,6 +271,20 @@ def set_comment(address: str, comment: str, comment_type: str) -> str:
     return safe_post("set_comment", {
         "address": address,
         "comment": comment,
+        "comment_type": comment_type
+    })
+
+@mcp.tool()
+def clear_comment(address: str, comment_type: str) -> str:
+    """
+    Remove the comment of the given type at an address.
+
+    comment_type must be one of: "eol", "pre", "post", "plate", "repeatable".
+    Equivalent to set_comment() with an empty comment.
+    """
+    return safe_post("set_comment", {
+        "address": address,
+        "comment": "",
         "comment_type": comment_type
     })
 
@@ -420,6 +437,7 @@ def batch_set_comments(comments: list[dict], comment_type: str = "decompiler") -
       - "plate"                 – Plate comment (block header / divider)
       - "repeatable"            – Repeatable comment (propagates through references)
     Each comment: {"address": "0x...", "comment": "text"}
+    A comment of "" or null removes the comment at that address.
     """
     return safe_post_json("batch_set_comments", {
         "comment_type": comment_type,
