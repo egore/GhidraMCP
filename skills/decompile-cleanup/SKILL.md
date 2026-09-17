@@ -117,30 +117,17 @@ Add comments that explain **why**, not **what**:
 
 - **Function-level comment** (at the function's entry address): summarize purpose, preconditions, return semantics, and any non-obvious side effects.
   ```
-  ghidra_set_comment(
+  ghidra_set_decompiler_comment(
     address="0x140001a20",
-    comment="Parses the INI-style config file at filePath into pConfigOut. Returns FALSE if the file is missing or malformed.",
-    comment_type="pre"
+    comment="Parses the INI-style config file at filePath into pConfigOut. Returns FALSE if the file is missing or malformed."
   )
   ```
 
 - **Inline comments** at key decision points -- not on every line:
   ```
-  ghidra_set_comment(
+  ghidra_set_decompiler_comment(
     address="0x140001a5c",
-    comment="Fall back to default config if the override section is absent",
-    comment_type="pre"
-  )
-  ```
-
-  `comment_type="pre"` is what the decompiler view shows. When adding several comments at once, use `ghidra_batch_set_comments` instead -- it applies them in a single transaction:
-  ```
-  ghidra_batch_set_comments(
-    comments=[
-      {"address": "0x140001a20", "comment": "Parses the INI-style config file..."},
-      {"address": "0x140001a5c", "comment": "Fall back to default config..."}
-    ],
-    comment_type="decompiler"
+    comment="Fall back to default config if the override section is absent"
   )
   ```
 
