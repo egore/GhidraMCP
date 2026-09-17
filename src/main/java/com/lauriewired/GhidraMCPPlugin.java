@@ -41,6 +41,7 @@ import ghidra.program.model.pcode.Varnode;
 import ghidra.program.model.data.DataType;
 import ghidra.program.model.data.DataTypeManager;
 import ghidra.program.model.data.DataTypeConflictHandler;
+import ghidra.program.model.data.ArrayDataType;
 import ghidra.program.model.data.PointerDataType;
 import ghidra.program.model.data.Undefined1DataType;
 import ghidra.program.model.data.EnumDataType;
@@ -1945,15 +1946,25 @@ public class GhidraMCPPlugin extends Plugin {
     }
 
     /**
-     * Resolves a data type by name, handling common types and pointer types
+     * Resolves a data type by name, handling common types, pointer types and
+     * C-style array types.
      * @param dtm The data type manager
      * @param typeName The type name to resolve
      * @return The resolved DataType, or null if not found
      */
     private DataType resolveDataType(DataTypeManager dtm, String typeName) {
+        if (typeName == null || typeName.trim().isEmpty()) {
+            throw new IllegalArgumentException("Data type name is required");
+        }
+        String trimmed = typeName.trim();
+
+        // Handle C-style array suffix(es): e.g. "uchar[4]", "int[2][3]", "void *[8]"
+        if (trimmed.endsWith("]")) {
+            return resolveArrayType(dtm, trimmed);
+        }
+
         // Handle C-style pointer suffix(es): e.g. "SomeType *" or "SomeType **"
         // Strip trailing whitespace and count/remove trailing '*' characters
-        String trimmed = typeName.trim();
         int pointerDepth = 0;
         while (trimmed.endsWith("*")) {
             pointerDepth++;
@@ -1968,7 +1979,7 @@ public class GhidraMCPPlugin extends Plugin {
         }
 
         // First try to find exact match by name in all categories
-        DataType dataType = findDataTypeByNameInAllCategories(dtm, typeName);
+        DataType dataType = findDataTypeByNameInAllCategories(dtm, trimmed);
         if (dataType != null) {
             Msg.info(this, "Found exact data type match: " + dataType.getPathName());
             return dataType;
@@ -1976,7 +1987,7 @@ public class GhidraMCPPlugin extends Plugin {
 
         // Try as a path in the data type manager (with leading '/' if not already present)
         // This handles paths like "d3d9h/functions/IDirect3DDevice9/SomeType"
-        String pathToTry = typeName.startsWith("/") ? typeName : "/" + typeName;
+        String pathToTry = trimmed.startsWith("/") ? trimmed : "/" + trimmed;
         DataType pathType = dtm.getDataType(pathToTry);
         if (pathType != null) {
             Msg.info(this, "Found data type by path: " + pathType.getPathName());
@@ -1984,8 +1995,8 @@ public class GhidraMCPPlugin extends Plugin {
         }
 
         // Check for Windows-style pointer types (PXXX)
-        if (typeName.startsWith("P") && typeName.length() > 1) {
-            String baseTypeName = typeName.substring(1);
+        if (trimmed.startsWith("P") && trimmed.length() > 1) {
+            String baseTypeName = trimmed.substring(1);
 
             // Special case for PVOID
             if (baseTypeName.equals("VOID")) {
@@ -1998,12 +2009,12 @@ public class GhidraMCPPlugin extends Plugin {
                 return new PointerDataType(baseType, dtm);
             }
 
-            Msg.warn(this, "Base type not found for " + typeName + ", defaulting to void*");
+            Msg.warn(this, "Base type not found for " + trimmed + ", defaulting to void*");
             return new PointerDataType(new VoidDataType(dtm), dtm);
         }
 
         // Handle common built-in types using concrete classes (avoids dtm path lookup failures)
-        switch (typeName.toLowerCase()) {
+        switch (trimmed.toLowerCase()) {
             case "int":
             case "long":
                 return new IntegerDataType(dtm);
@@ -2050,6 +2061,57 @@ public class GhidraMCPPlugin extends Plugin {
         }
     }
     
+    /**
+     * Resolve a C-style array type such as "uchar[4]", "int[2][3]" or "void *[8]".
+     *
+     * Dimensions are stripped right-to-left and applied innermost-first, so
+     * "int[2][3]" is 2 arrays of 3 ints, matching C. The element type is
+     * resolved recursively, so pointer and named types work as elements.
+     *
+     * @throws IllegalArgumentException if the syntax is malformed, a dimension is
+     *         not a positive decimal count, or the element type has no fixed size
+     */
+    private DataType resolveArrayType(DataTypeManager dtm, String typeName) {
+        List<Integer> dimensions = new ArrayList<>();
+        String elementName = typeName;
+
+        while (elementName.endsWith("]")) {
+            int open = elementName.lastIndexOf('[');
+            if (open < 0) {
+                throw new IllegalArgumentException("Malformed array type '" + typeName +
+                    "': missing '[' for a closing ']'");
+            }
+            String countStr = elementName.substring(open + 1, elementName.length() - 1).trim();
+            int count;
+            try {
+                count = Integer.parseInt(countStr);
+            } catch (NumberFormatException e) {
+                throw new IllegalArgumentException("Malformed array dimension '[" + countStr +
+                    "]' in '" + typeName + "': expected a decimal element count");
+            }
+            if (count <= 0) {
+                throw new IllegalArgumentException("Array dimension '[" + countStr + "]' in '" +
+                    typeName + "' must be greater than zero");
+            }
+            dimensions.add(count);
+            elementName = elementName.substring(0, open).trim();
+        }
+
+        if (elementName.isEmpty()) {
+            throw new IllegalArgumentException("Array type '" + typeName + "' has no element type");
+        }
+
+        DataType arrayType = resolveDataType(dtm, elementName);
+        if (arrayType.getLength() <= 0) {
+            throw new IllegalArgumentException("Cannot create an array of '" + elementName +
+                "': that type has no fixed size");
+        }
+        for (int dimension : dimensions) {
+            arrayType = new ArrayDataType(arrayType, dimension, -1, dtm);
+        }
+        return arrayType;
+    }
+
     /**
      * Find a data type by name in all categories/folders of the data type manager
      * This searches through all categories rather than just the root
@@ -3214,10 +3276,32 @@ public class GhidraMCPPlugin extends Plugin {
                     }
                     int targetIdx = target.getOrdinal();
                     int targetOffset = target.getOffset();
+                    int targetLength = target.getLength();
                     DataType oldDt = target.getDataType();
                     DataType effectiveDt = (newType != null) ? resolveDataType(dtm, newType) : oldDt;
                     String effectiveName = (newName != null) ? newName : fieldName;
-                    struct.replace(targetIdx, effectiveDt, effectiveDt.getLength(), effectiveName, null);
+                    int newLength = effectiveDt.getLength();
+
+                    // Promoting a field to a larger type (e.g. uchar -> uchar[4]) needs
+                    // undefined bytes after it. Ghidra never grows the struct itself, so
+                    // extend it here when the field would run past the end; a packed
+                    // struct lays itself out, so it is left alone.
+                    if (newLength > targetLength && !struct.isPackingEnabled()) {
+                        String clobbered = findDefinedFieldsInRange(
+                            struct, targetOffset + targetLength, newLength - targetLength);
+                        if (clobbered != null) {
+                            result.set("Field '" + fieldName + "' cannot grow from " + targetLength +
+                                       " to " + newLength + " bytes: the following field(s) are in the " +
+                                       "way: " + clobbered + ". Delete them first, or recreate the struct.");
+                            return;
+                        }
+                        int required = targetOffset + newLength;
+                        if (required > struct.getLength()) {
+                            struct.growStructure(required - struct.getLength());
+                        }
+                    }
+
+                    struct.replace(targetIdx, effectiveDt, newLength, effectiveName, null);
                     success = true;
                     StringBuilder msg = new StringBuilder("Updated field '" + fieldName + "' in '" + structName + "'");
                     if (newType != null) {
@@ -3227,7 +3311,8 @@ public class GhidraMCPPlugin extends Plugin {
                         msg.append(" name -> '" + newName + "'");
                     }
                     msg.append(" (offset 0x" + Integer.toHexString(targetOffset) +
-                               ", size " + effectiveDt.getLength() + ")");
+                               ", size " + newLength + "). Struct size is now " +
+                               struct.getLength() + " bytes");
                     result.set(msg.toString());
                 } catch (Exception e) {
                     Msg.error(this, "Error updating struct field", e);

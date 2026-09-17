@@ -463,6 +463,9 @@ def create_struct(name: str, fields: list[dict], category_path: str = None) -> s
     Each field: {"name": "field_name", "type": "int", "size": 4}
     If size is omitted, the type's natural size is used.
 
+    Field types accept C syntax: plain names ("int", "MyStruct"), pointers
+    ("char *", "MyStruct **") and arrays ("uchar[4]", "int[2][3]", "void *[8]").
+
     Parameters:
         name: Name of the struct
         fields: List of field dicts with "name", "type", and optional "size" keys
@@ -527,6 +530,11 @@ def update_struct_field(struct_name: str, field_name: str, new_type: str = None,
     structure. At least one of new_type or new_name must be provided.
     To add a field that does not exist yet, use add_struct_field.
 
+    new_type accepts C syntax: plain names ("int", "MyStruct"), pointers
+    ("char *") and arrays ("uchar[4]", "int[2][3]"). Promoting a field to a
+    larger type grows the struct if the extra bytes fall past its end; if a
+    defined field is in the way, the update is rejected instead.
+
     field_name can be:
       - An explicit field name (e.g. "myField")
       - An auto-generated field name (e.g. "field1_0x4") for unnamed fields
@@ -557,7 +565,7 @@ def add_struct_field(struct_name: str, field_name: str, field_type: str,
 
     Args:
         struct_name: Name of the existing struct
-        field_type: Type of the new field (e.g. "int", "MyType *")
+        field_type: Type of the new field (e.g. "int", "MyType *", "uchar[4]")
         offset: Optional offset for the field, hex (e.g. "0x10") or decimal.
                 If omitted, the field is appended to the end of the struct.
                 If given, the field is placed at that offset, consuming undefined
